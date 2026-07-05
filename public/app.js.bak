@@ -1,0 +1,1956 @@
+/**
+ * 暑期学习计划 - 主应用逻辑
+ * 支持：学生端、家长端、本地存储、AI建议
+ */
+
+// ==================== 配置 ====================
+const CONFIG = {
+    SUBJECTS: ['语文', '数学', '英语', '物理', '化学', '课外编程', '篮球', '其他'],
+    SLOTS: {
+        morning: { name: '上午', hours: 2, start: '08:00', end: '10:00' },
+        afternoon: { name: '下午', hours: 2, start: '14:00', end: '16:00' },
+        evening: { name: '晚上', hours: 2.5, start: '19:00', end: '21:30' }
+    },
+    TOTAL_WEEKS: 8,
+    STORAGE_KEY: 'summer_study_data',
+    USER_KEY: 'summer_study_user'
+};
+
+// ==================== 数据存储 ====================
+class DataStore {
+    constructor() {
+        this.data = this.load();
+        this.currentUser = this.loadUser();
+    }
+
+    load() {
+        try {
+            const raw = localStorage.getItem(CONFIG.STORAGE_KEY);
+            if (raw) return JSON.parse(raw);
+        } catch (e) {
+            console.error('加载数据失败:', e);
+        }
+        return this.getDefaultData();
+    }
+
+    save() {
+        try {
+            localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(this.data));
+        } catch (e) {
+            console.error('保存数据失败:', e);
+        }
+    }
+
+    loadUser() {
+        try {
+            const raw = localStorage.getItem(CONFIG.USER_KEY);
+            if (raw) return JSON.parse(raw);
+        } catch (e) {
+            console.error('加载用户失败:', e);
+        }
+        return null;
+    }
+
+    saveUser(user) {
+        this.currentUser = user;
+        try {
+            if (user) {
+                localStorage.setItem(CONFIG.USER_KEY, JSON.stringify(user));
+            } else {
+                localStorage.removeItem(CONFIG.USER_KEY);
+            }
+        } catch (e) {
+            console.error('保存用户失败:', e);
+        }
+    }
+
+    getDefaultData() {
+        return {
+            users: {},
+            tasks: {},
+            plans: {},
+            weeklyPlans: {},
+            parentBindings: {},
+            createdAt: new Date().toISOString()
+        };
+    }
+
+    // 生成唯一ID
+    generateId() {
+        return Date.now().toString(36) + Math.random().toString(36).substr(2);
+    }
+
+    // 获取今日日期字符串
+    getTodayStr() {
+        return new Date().toISOString().split('T')[0];
+    }
+
+    // 获取日期所在周的周一
+    getWeekStart(dateStr) {
+        const d = new Date(dateStr);
+        const day = d.getDay();
+        const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+        const monday = new Date(d.setDate(diff));
+        return monday.toISOString().split('T')[0];
+    }
+
+    // 获取日期字符串数组 [周一, ..., 周日]
+    getWeekDays(weekStart) {
+        const days = [];
+        const start = new Date(weekStart);
+        for (let i = 0; i < 7; i++) {
+            const d = new Date(start);
+            d.setDate(d.getDate() + i);
+            days.push(d.toISOString().split('T')[0]);
+        }
+        return days;
+    }
+
+    // 获取下周的周一日期
+    getNextWeekStart(dateStr) {
+        const d = new Date(dateStr);
+        const day = d.getDay();
+        const diff = d.getDate() - day + (day === 0 ? -6 : 1) + 7;
+        const nextMonday = new Date(d.setDate(diff));
+        return nextMonday.toISOString().split('T')[0];
+    }
+
+    // 注册用户
+    registerUser(username, password, displayName, role, parentCode = null) {
+        if (this.data.users[username]) {
+            return { success: false, message: '用户名已存在' };
+        }
+
+        const userId = this.generateId();
+        const user = {
+            id: userId,
+            username,
+            password, // 实际应用应加密
+            displayName,
+            role,
+            createdAt: new Date().toISOString(),
+            parentCode: role === 'student' ? this.generateParentCode() : null
+        };
+
+        this.data.users[username] = user;
+
+        // 如果是学生，初始化8周计划
+        if (role === 'student') {
+            this.initWeekPlans(userId);
+        }
+
+        // 家长绑定
+        if (role === 'student' && parentCode) {
+            this.bindParent(userId, parentCode);
+        }
+
+        this.save();
+        return { success: true, user };
+    }
+
+    // 登录
+    loginUser(username, password) {
+        const user = this.data.users[username];
+        if (!user || user.password !== password) {
+            return { success: false, message: '用户名或密码错误' };
+        }
+        return { success: true, user };
+    }
+
+    // 生成家长绑定码
+    generateParentCode() {
+        return Math.random().toString(36).substr(2, 6).toUpperCase();
+    }
+
+    // 绑定家长
+    bindParent(studentId, parentCode) {
+        if (!this.data.parentBindings[parentCode]) {
+            this.data.parentBindings[parentCode] = { studentId, parents: [] };
+        }
+    }
+
+    // 家长绑定学生
+    parentBindStudent(parentId, parentCode) {
+        const binding = this.data.parentBindings[parentCode];
+        if (!binding) {
+            return { success: false, message: '绑定码无效' };
+        }
+        if (!binding.parents.includes(parentId)) {
+            binding.parents.push(parentId);
+        }
+        this.save();
+        return { success: true, studentId: binding.studentId };
+    }
+
+    // 获取学生绑定的家长
+    getStudentParents(studentId) {
+        const parents = [];
+        for (const [code, binding] of Object.entries(this.data.parentBindings)) {
+            if (binding.studentId === studentId) {
+                binding.parents.forEach(pid => {
+                    const p = Object.values(this.data.users).find(u => u.id === pid);
+                    if (p) parents.push(p);
+                });
+            }
+        }
+        return parents;
+    }
+
+    // 获取家长绑定的学生
+    getParentStudents(parentId) {
+        const students = [];
+        for (const [code, binding] of Object.entries(this.data.parentBindings)) {
+            if (binding.parents.includes(parentId)) {
+                const s = Object.values(this.data.users).find(u => u.id === binding.studentId);
+                if (s) students.push(s);
+            }
+        }
+        return students;
+    }
+
+    // 初始化周计划
+    initWeekPlans(userId) {
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - startDate.getDay() + 1);
+
+        for (let week = 0; week < CONFIG.TOTAL_WEEKS; week++) {
+            const weekStart = new Date(startDate);
+            weekStart.setDate(weekStart.getDate() + week * 7);
+            const weekKey = weekStart.toISOString().split('T')[0];
+
+            if (!this.data.plans[userId]) this.data.plans[userId] = {};
+            this.data.plans[userId][weekKey] = this.generateDefaultWeekPlan(week);
+        }
+        this.save();
+    }
+
+    // 生成默认周计划
+    generateDefaultWeekPlan(weekNum) {
+        const plan = {};
+        const subjects = CONFIG.SUBJECTS;
+
+        // 每天每个时段分配科目
+        const dailySchedule = {
+            morning: ['语文', '数学', '英语', '物理', '化学', '课外编程', '篮球', '其他'],
+            afternoon: ['数学', '英语', '物理', '化学', '语文', '课外编程', '篮球', '其他'],
+            evening: ['英语', '语文', '数学', '化学', '物理', '其他', '课外编程', '篮球']
+        };
+
+        for (let day = 0; day < 7; day++) {
+            const dayTasks = [];
+            ['morning', 'afternoon', 'evening'].forEach((slot, slotIdx) => {
+                const subject = dailySchedule[slot][(weekNum * 7 + day + slotIdx) % subjects.length];
+                const isWeekend = day >= 5;
+
+                if (isWeekend && subject === '篮球') {
+                    dayTasks.push({
+                        id: this.generateId(),
+                        subject,
+                        slot,
+                        content: '篮球训练',
+                        duration: slot === 'evening' ? 90 : 60,
+                        priority: 'medium',
+                        completed: false
+                    });
+                } else if (subject === '课外编程') {
+                    dayTasks.push({
+                        id: this.generateId(),
+                        subject,
+                        slot,
+                        content: '编程练习',
+                        duration: 60,
+                        priority: 'medium',
+                        completed: false
+                    });
+                } else if (subject === '篮球') {
+                    dayTasks.push({
+                        id: this.generateId(),
+                        subject,
+                        slot,
+                        content: '篮球运动',
+                        duration: 60,
+                        priority: 'low',
+                        completed: false
+                    });
+                } else {
+                    dayTasks.push({
+                        id: this.generateId(),
+                        subject,
+                        slot,
+                        content: `${subject}学习`,
+                        duration: 45,
+                        priority: 'high',
+                        completed: false
+                    });
+                }
+            });
+            plan[day] = dayTasks;
+        }
+        return plan;
+    }
+
+    // ==================== 手动周计划制定（新） ====================
+
+    // 获取或创建某周的空白计划模板
+    getWeeklyPlanTemplate(userId, weekStart) {
+        if (!this.data.weeklyPlans[userId]) this.data.weeklyPlans[userId] = {};
+        if (!this.data.weeklyPlans[userId][weekStart]) {
+            this.data.weeklyPlans[userId][weekStart] = this.createBlankWeeklyPlan(weekStart);
+        }
+        return this.data.weeklyPlans[userId][weekStart];
+    }
+
+    // 创建空白周计划模板
+    createBlankWeeklyPlan(weekStart) {
+        const weekDays = this.getWeekDays(weekStart);
+        const plan = {};
+        weekDays.forEach((date, dayIndex) => {
+            plan[date] = {
+                morning: [null, null],      // 2项 x 60分钟
+                afternoon: [null, null],    // 2项 x 60分钟
+                evening: [null, null]       // 2项（晚上2.5小时，可2项x75分钟或3项）
+            };
+        });
+        return plan;
+    }
+
+    // 保存计划项到周计划模板
+    saveWeeklyPlanItem(userId, weekStart, date, slot, index, item) {
+        if (!this.data.weeklyPlans[userId]) this.data.weeklyPlans[userId] = {};
+        if (!this.data.weeklyPlans[userId][weekStart]) {
+            this.data.weeklyPlans[userId][weekStart] = this.createBlankWeeklyPlan(weekStart);
+        }
+        this.data.weeklyPlans[userId][weekStart][date][slot][index] = item;
+        this.save();
+    }
+
+    // 删除计划项
+    deleteWeeklyPlanItem(userId, weekStart, date, slot, index) {
+        if (this.data.weeklyPlans[userId] && this.data.weeklyPlans[userId][weekStart]) {
+            this.data.weeklyPlans[userId][weekStart][date][slot][index] = null;
+            this.save();
+        }
+    }
+
+    // 清空周计划
+    clearWeeklyPlan(userId, weekStart) {
+        if (this.data.weeklyPlans[userId]) {
+            this.data.weeklyPlans[userId][weekStart] = this.createBlankWeeklyPlan(weekStart);
+            this.save();
+        }
+    }
+
+    // 检查周计划是否已确认（已生成任务）
+    isWeeklyPlanConfirmed(userId, weekStart) {
+        return !!(this.data.plans[userId] && this.data.plans[userId][weekStart]);
+    }
+
+    // 确认周计划：将 weeklyPlans 转换为每日任务 plans
+    confirmWeeklyPlan(userId, weekStart) {
+        const weeklyPlan = this.data.weeklyPlans[userId]?.[weekStart];
+        if (!weeklyPlan) return false;
+
+        if (!this.data.plans[userId]) this.data.plans[userId] = {};
+
+        const weekDays = this.getWeekDays(weekStart);
+        const dayPlan = {};
+
+        weekDays.forEach((date, dayIndex) => {
+            const dayTasks = [];
+            const dayPlanData = weeklyPlan[date];
+
+            ['morning', 'afternoon', 'evening'].forEach(slot => {
+                const items = dayPlanData[slot] || [];
+                items.forEach((item, idx) => {
+                    if (item && item.subject) {
+                        dayTasks.push({
+                            id: this.generateId(),
+                            subject: item.subject,
+                            slot: slot,
+                            content: item.content || `${item.subject}学习`,
+                            duration: item.duration || 60,
+                            priority: this.getSubjectPriority(item.subject),
+                            completed: false,
+                            fromPlan: true,
+                            planIndex: idx
+                        });
+                    }
+                });
+            });
+
+            dayPlan[dayIndex] = dayTasks;
+        });
+
+        this.data.plans[userId][weekStart] = dayPlan;
+        this.save();
+        return true;
+    }
+
+    // 获取科目默认优先级
+    getSubjectPriority(subject) {
+        const lowPriority = ['篮球', '其他'];
+        const mediumPriority = ['课外编程'];
+        if (lowPriority.includes(subject)) return 'low';
+        if (mediumPriority.includes(subject)) return 'medium';
+        return 'high';
+    }
+
+    // 获取某天的任务
+    getDayTasks(userId, dateStr) {
+        const weekStart = this.getWeekStart(dateStr);
+        const dayOfWeek = new Date(dateStr).getDay();
+        const adjustedDay = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+        if (!this.data.plans[userId] || !this.data.plans[userId][weekStart]) {
+            return [];
+        }
+
+        const tasks = this.data.plans[userId][weekStart][adjustedDay] || [];
+
+        // 合并自定义任务
+        const customKey = `${userId}_${dateStr}`;
+        const customTasks = this.data.tasks[customKey] || [];
+
+        return [...tasks, ...customTasks];
+    }
+
+    // 添加自定义任务
+    addTask(userId, dateStr, task) {
+        const customKey = `${userId}_${dateStr}`;
+        if (!this.data.tasks[customKey]) this.data.tasks[customKey] = [];
+
+        task.id = this.generateId();
+        task.createdAt = new Date().toISOString();
+        this.data.tasks[customKey].push(task);
+        this.save();
+        return task;
+    }
+
+    // 更新任务
+    updateTask(userId, dateStr, taskId, updates) {
+        // 先查找自定义任务
+        const customKey = `${userId}_${dateStr}`;
+        let task = null;
+
+        if (this.data.tasks[customKey]) {
+            const idx = this.data.tasks[customKey].findIndex(t => t.id === taskId);
+            if (idx >= 0) {
+                this.data.tasks[customKey][idx] = { ...this.data.tasks[customKey][idx], ...updates };
+                task = this.data.tasks[customKey][idx];
+            }
+        }
+
+        // 再查找计划任务
+        if (!task) {
+            const weekStart = this.getWeekStart(dateStr);
+            const dayOfWeek = new Date(dateStr).getDay();
+            const adjustedDay = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+            if (this.data.plans[userId] && this.data.plans[userId][weekStart]) {
+                const dayTasks = this.data.plans[userId][weekStart][adjustedDay];
+                const idx = dayTasks.findIndex(t => t.id === taskId);
+                if (idx >= 0) {
+                    dayTasks[idx] = { ...dayTasks[idx], ...updates };
+                    task = dayTasks[idx];
+                }
+            }
+        }
+
+        if (task) this.save();
+        return task;
+    }
+
+    // 删除任务
+    deleteTask(userId, dateStr, taskId) {
+        const customKey = `${userId}_${dateStr}`;
+        if (this.data.tasks[customKey]) {
+            const idx = this.data.tasks[customKey].findIndex(t => t.id === taskId);
+            if (idx >= 0) {
+                this.data.tasks[customKey].splice(idx, 1);
+                this.save();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 切换任务完成状态
+    toggleTaskComplete(userId, dateStr, taskId) {
+        const task = this.findTask(userId, dateStr, taskId);
+        if (task) {
+            task.completed = !task.completed;
+            task.completedAt = task.completed ? new Date().toISOString() : null;
+            this.save();
+        }
+        return task;
+    }
+
+    // 查找任务
+    findTask(userId, dateStr, taskId) {
+        const tasks = this.getDayTasks(userId, dateStr);
+        return tasks.find(t => t.id === taskId);
+    }
+
+    // 获取统计数据
+    getStats(userId, period = 'week') {
+        const now = new Date();
+        let startDate, endDate;
+
+        if (period === 'week') {
+            startDate = this.getWeekStart(this.getTodayStr());
+            endDate = this.getTodayStr();
+        } else if (period === 'month') {
+            startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+            endDate = this.getTodayStr();
+        } else {
+            startDate = this.data.users[Object.keys(this.data.users).find(u => this.data.users[u].id === userId)]?.createdAt?.split('T')[0] || this.getTodayStr();
+            endDate = this.getTodayStr();
+        }
+
+        const stats = {
+            totalTasks: 0,
+            completedTasks: 0,
+            subjectStats: {},
+            dailyStats: {},
+            timeDistribution: { morning: 0, afternoon: 0, evening: 0 }
+        };
+
+        CONFIG.SUBJECTS.forEach(s => {
+            stats.subjectStats[s] = { total: 0, completed: 0, totalDuration: 0 };
+        });
+
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            const dateStr = d.toISOString().split('T')[0];
+            const tasks = this.getDayTasks(userId, dateStr);
+
+            tasks.forEach(task => {
+                stats.totalTasks++;
+                if (task.completed) stats.completedTasks++;
+
+                if (stats.subjectStats[task.subject]) {
+                    stats.subjectStats[task.subject].total++;
+                    if (task.completed) stats.subjectStats[task.subject].completed++;
+                    stats.subjectStats[task.subject].totalDuration += task.duration || 0;
+                }
+
+                if (task.slot) {
+                    stats.timeDistribution[task.slot] += task.duration || 0;
+                }
+
+                if (!stats.dailyStats[dateStr]) {
+                    stats.dailyStats[dateStr] = { total: 0, completed: 0 };
+                }
+                stats.dailyStats[dateStr].total++;
+                if (task.completed) stats.dailyStats[dateStr].completed++;
+            });
+        }
+
+        return stats;
+    }
+
+    // 导出数据
+    exportData() {
+        return JSON.stringify(this.data, null, 2);
+    }
+
+    // 导入数据
+    importData(jsonStr) {
+        try {
+            const data = JSON.parse(jsonStr);
+            this.data = data;
+            this.save();
+            return { success: true };
+        } catch (e) {
+            return { success: false, message: '数据格式错误' };
+        }
+    }
+}
+
+// ==================== AI 建议引擎 ====================
+class AIAdviceEngine {
+    constructor(dataStore) {
+        this.dataStore = dataStore;
+    }
+
+    generateAdvice(userId) {
+        const advice = [];
+        const stats = this.dataStore.getStats(userId, 'week');
+        const allStats = this.dataStore.getStats(userId, 'all');
+        const today = this.dataStore.getTodayStr();
+        const todayTasks = this.dataStore.getDayTasks(userId, today);
+
+        // 1. 今日完成度分析
+        const todayCompleted = todayTasks.filter(t => t.completed).length;
+        const todayTotal = todayTasks.length;
+        const todayRate = todayTotal > 0 ? todayCompleted / todayTotal : 0;
+
+        if (todayRate === 0 && todayTasks.length > 0) {
+            advice.push({
+                type: 'danger',
+                title: '今日尚未开始学习',
+                content: '今天还有 ' + todayTasks.length + ' 项任务等待完成。建议立即开始，哪怕先完成一项也能建立良好的学习节奏。',
+                source: '实时分析'
+            });
+        } else if (todayRate < 0.5 && todayTasks.length > 0) {
+            advice.push({
+                type: 'warning',
+                title: '今日进度较慢',
+                content: `目前完成了 ${Math.round(todayRate * 100)}%，建议优先完成高优先级任务，合理分配剩余时间。`,
+                source: '实时分析'
+            });
+        } else if (todayRate >= 0.8) {
+            advice.push({
+                type: 'success',
+                title: '今日表现优秀！',
+                content: '你已经完成了大部分任务，保持良好的学习节奏！',
+                source: '实时分析'
+            });
+        }
+
+        // 2. 科目均衡分析
+        const subjectRates = {};
+        Object.entries(allStats.subjectStats).forEach(([subject, stat]) => {
+            if (stat.total > 0) {
+                subjectRates[subject] = stat.completed / stat.total;
+            }
+        });
+
+        const sortedSubjects = Object.entries(subjectRates).sort((a, b) => a[1] - b[1]);
+        const weakest = sortedSubjects[0];
+        const strongest = sortedSubjects[sortedSubjects.length - 1];
+
+        if (weakest && weakest[1] < 0.6) {
+            advice.push({
+                type: 'warning',
+                title: `${weakest[0]} 需要加强`,
+                content: `${weakest[0]} 的完成率仅为 ${Math.round(weakest[1] * 100)}%，建议增加该科目的学习时间，或调整学习计划使其更易于执行。`,
+                source: '科目分析'
+            });
+        }
+
+        if (strongest && strongest[1] > 0.9) {
+            advice.push({
+                type: 'success',
+                title: `${strongest[0]} 表现突出`,
+                content: `${strongest[0]} 的完成率高达 ${Math.round(strongest[1] * 100)}%，继续保持！`,
+                source: '科目分析'
+            });
+        }
+
+        // 3. 时间分配分析
+        const totalTime = Object.values(allStats.timeDistribution).reduce((a, b) => a + b, 0);
+        if (totalTime > 0) {
+            const eveningRatio = allStats.timeDistribution.evening / totalTime;
+            if (eveningRatio > 0.5) {
+                advice.push({
+                    type: 'warning',
+                    title: '晚间学习负担较重',
+                    content: '超过50%的学习时间集中在晚上，长期可能影响休息。建议将部分任务调整到上午或下午完成。',
+                    source: '时间分析'
+                });
+            }
+        }
+
+        // 4. 连续完成情况分析
+        const dailyStats = allStats.dailyStats;
+        const dates = Object.keys(dailyStats).sort();
+        let streak = 0;
+        let maxStreak = 0;
+        let brokenStreak = false;
+
+        for (let i = dates.length - 1; i >= 0; i--) {
+            const day = dailyStats[dates[i]];
+            const rate = day.total > 0 ? day.completed / day.total : 0;
+            if (rate >= 0.7) {
+                if (!brokenStreak) streak++;
+                maxStreak++;
+            } else {
+                brokenStreak = true;
+            }
+        }
+
+        if (streak >= 3) {
+            advice.push({
+                type: 'success',
+                title: `连续 ${streak} 天表现优秀！`,
+                content: '你保持了良好的学习习惯，这种坚持会带来显著的进步。',
+                source: '习惯分析'
+            });
+        } else if (streak === 0 && dates.length > 0) {
+            const lastDay = dailyStats[dates[dates.length - 1]];
+            const lastRate = lastDay.total > 0 ? lastDay.completed / lastDay.total : 0;
+            if (lastRate < 0.5) {
+                advice.push({
+                    type: 'danger',
+                    title: '学习连续性中断',
+                    content: '昨天完成度较低，今天是一个新的开始，建议从最简单的任务入手，重建学习节奏。',
+                    source: '习惯分析'
+                });
+            }
+        }
+
+        // 5. 暑期进度分析
+        const startDate = new Date(this.dataStore.data.createdAt);
+        const now = new Date();
+        const daysPassed = Math.floor((now - startDate) / (1000 * 60 * 60 * 24));
+        const totalDays = CONFIG.TOTAL_WEEKS * 7;
+        const progressPercent = Math.min(100, Math.round((daysPassed / totalDays) * 100));
+        const expectedProgress = Math.round((daysPassed / totalDays) * allStats.totalTasks);
+
+        if (allStats.completedTasks < expectedProgress * 0.8) {
+            advice.push({
+                type: 'warning',
+                title: '暑期进度偏慢',
+                content: `暑期已过 ${progressPercent}%，但完成进度低于预期。建议适当调整计划强度，或增加每日学习时长。`,
+                source: '进度分析'
+            });
+        } else if (allStats.completedTasks > expectedProgress * 1.2) {
+            advice.push({
+                type: 'success',
+                title: '暑期进度超前！',
+                content: `你的学习进度超过了预期，这种积极性值得表扬。注意保持劳逸结合。`,
+                source: '进度分析'
+            });
+        }
+
+        // 6. 具体行动建议
+        if (todayTasks.length > 0) {
+            const pendingHigh = todayTasks.filter(t => !t.completed && t.priority === 'high');
+            if (pendingHigh.length > 0) {
+                advice.push({
+                    type: 'warning',
+                    title: '优先完成高优先级任务',
+                    content: `还有 ${pendingHigh.length} 项高优先级任务未完成：${pendingHigh.map(t => t.subject).join('、')}。建议优先处理。`,
+                    source: '任务分析'
+                });
+            }
+        }
+
+        // 7. 运动与休息建议
+        const weeklyStats = this.dataStore.getStats(userId, 'week');
+        const sportStat = weeklyStats.subjectStats['篮球'] || { totalDuration: 0 };
+        if (sportStat.totalDuration < 60) {
+            advice.push({
+                type: 'warning',
+                title: '运动时间不足',
+                content: '本周运动时间较少，建议每天安排至少30分钟体育活动，保持身体健康和学习效率。',
+                source: '健康分析'
+            });
+        }
+
+        return advice.length > 0 ? advice : [{
+            type: 'success',
+            title: '一切正常',
+            content: '你的学习状态良好，继续保持！',
+            source: '综合分析'
+        }];
+    }
+}
+
+// ==================== UI 控制器 ====================
+class UIController {
+    constructor(dataStore, adviceEngine) {
+        this.dataStore = dataStore;
+        this.adviceEngine = adviceEngine;
+        this.currentView = 'today';
+        this.currentWeekOffset = 0;
+        this.selectedChild = null;
+        this.init();
+    }
+
+    init() {
+        this.bindEvents();
+        this.checkAuth();
+        this.updateDateDisplay();
+    }
+
+    bindEvents() {
+        // 认证标签切换
+        document.querySelectorAll('.auth-tabs .tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.switchAuthTab(btn.dataset.tab));
+        });
+
+        // 登录
+        document.getElementById('login-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleLogin();
+        });
+
+        // 注册
+        document.getElementById('register-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleRegister();
+        });
+
+        // 免登录
+        document.getElementById('guest-btn').addEventListener('click', () => {
+            this.startGuestMode();
+        });
+
+        // 导航
+        document.querySelectorAll('.tab-nav .nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.switchView(btn.dataset.view));
+        });
+
+        // 添加任务
+        document.getElementById('add-task-btn').addEventListener('click', () => {
+            this.openTaskModal();
+        });
+
+        document.getElementById('cancel-task').addEventListener('click', () => {
+            this.closeTaskModal();
+        });
+
+        document.getElementById('task-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.saveTask();
+        });
+
+        // 设置
+        document.getElementById('settings-btn').addEventListener('click', () => {
+            this.openSettings();
+        });
+
+        document.querySelector('#settings-modal .close-modal').addEventListener('click', () => {
+            this.closeSettings();
+        });
+
+        document.getElementById('generate-week-plan').addEventListener('click', () => {
+            this.generateWeekPlan();
+        });
+
+        document.getElementById('export-data').addEventListener('click', () => {
+            this.exportData();
+        });
+
+        document.getElementById('import-data').addEventListener('click', () => {
+            document.getElementById('import-file').click();
+        });
+
+        document.getElementById('import-file').addEventListener('change', (e) => {
+            this.importData(e.target.files[0]);
+        });
+
+        // 退出
+        document.getElementById('logout-btn').addEventListener('click', () => this.logout());
+        document.getElementById('parent-logout-btn').addEventListener('click', () => this.logout());
+
+        // 周导航
+        document.getElementById('prev-week').addEventListener('click', () => {
+            this.currentWeekOffset--;
+            this.renderWeekView();
+        });
+
+        document.getElementById('next-week').addEventListener('click', () => {
+            this.currentWeekOffset++;
+            this.renderWeekView();
+        });
+
+        // 统计筛选
+        document.querySelectorAll('.stats-filters .filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.stats-filters .filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.renderStats(btn.dataset.period);
+            });
+        });
+
+        // 刷新建议
+        document.getElementById('refresh-advice').addEventListener('click', () => {
+            this.renderAdvice();
+        });
+
+        // 注册角色切换
+        document.querySelectorAll('input[name="reg-role"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                const isStudent = radio.value === 'student';
+                document.getElementById('reg-parent-code').style.display = isStudent ? 'block' : 'none';
+            });
+        });
+
+        // 计划模块事件
+        document.getElementById('plan-prev-week').addEventListener('click', () => {
+            this.planWeekOffset = (this.planWeekOffset || 0) - 1;
+            this.renderPlanView();
+        });
+
+        document.getElementById('plan-next-week').addEventListener('click', () => {
+            this.planWeekOffset = (this.planWeekOffset || 0) + 1;
+            this.renderPlanView();
+        });
+
+        document.getElementById('cancel-plan-item').addEventListener('click', () => {
+            this.closePlanItemModal();
+        });
+
+        document.getElementById('plan-item-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.savePlanItem();
+        });
+
+        document.getElementById('save-plan-btn').addEventListener('click', () => {
+            this.confirmWeeklyPlan();
+        });
+
+        document.getElementById('clear-plan-btn').addEventListener('click', () => {
+            this.clearWeeklyPlan();
+        });
+    }
+
+    checkAuth() {
+        const user = this.dataStore.currentUser;
+        if (user) {
+            if (user.role === 'student') {
+                this.showStudentScreen();
+            } else {
+                this.showParentScreen();
+            }
+        }
+    }
+
+    switchAuthTab(tab) {
+        document.querySelectorAll('.auth-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector(`.auth-tabs .tab-btn[data-tab="${tab}"]`).classList.add('active');
+
+        document.getElementById('login-form').classList.toggle('hidden', tab !== 'login');
+        document.getElementById('register-form').classList.toggle('hidden', tab !== 'register');
+    }
+
+    handleLogin() {
+        const username = document.getElementById('login-username').value;
+        const password = document.getElementById('login-password').value;
+        const role = document.querySelector('input[name="role"]:checked').value;
+
+        const result = this.dataStore.loginUser(username, password);
+        if (result.success) {
+            if (result.user.role !== role) {
+                this.showNotification('角色选择错误', 'error');
+                return;
+            }
+            this.dataStore.saveUser(result.user);
+            if (role === 'student') {
+                this.showStudentScreen();
+            } else {
+                this.showParentScreen();
+            }
+            this.showNotification('登录成功！');
+        } else {
+            this.showNotification(result.message, 'error');
+        }
+    }
+
+    handleRegister() {
+        const username = document.getElementById('reg-username').value;
+        const password = document.getElementById('reg-password').value;
+        const confirm = document.getElementById('reg-password-confirm').value;
+        const displayName = document.getElementById('reg-display-name').value;
+        const role = document.querySelector('input[name="reg-role"]:checked').value;
+        const parentCode = document.getElementById('reg-parent-code').value;
+
+        if (password !== confirm) {
+            this.showNotification('两次密码不一致', 'error');
+            return;
+        }
+
+        const result = this.dataStore.registerUser(username, password, displayName, role, parentCode);
+        if (result.success) {
+            this.dataStore.saveUser(result.user);
+            if (role === 'student') {
+                this.showNotification(`注册成功！家长绑定码：${result.user.parentCode}`);
+                this.showStudentScreen();
+            } else {
+                this.showNotification('注册成功！');
+                this.showParentScreen();
+            }
+        } else {
+            this.showNotification(result.message, 'error');
+        }
+    }
+
+    startGuestMode() {
+        const guestId = 'guest_' + Date.now();
+        const guestUser = {
+            id: guestId,
+            username: 'guest',
+            displayName: '访客',
+            role: 'student',
+            isGuest: true
+        };
+        this.dataStore.saveUser(guestUser);
+        this.dataStore.initWeekPlans(guestId);
+        this.showStudentScreen();
+        this.showNotification('已开启免登录模式，数据仅保存在本地');
+    }
+
+    logout() {
+        this.dataStore.saveUser(null);
+        location.reload();
+    }
+
+    showStudentScreen() {
+        document.getElementById('auth-screen').classList.add('hidden');
+        document.getElementById('student-screen').classList.remove('hidden');
+        document.getElementById('parent-screen').classList.add('hidden');
+        this.renderTodayView();
+    }
+
+    showParentScreen() {
+        document.getElementById('auth-screen').classList.add('hidden');
+        document.getElementById('student-screen').classList.add('hidden');
+        document.getElementById('parent-screen').classList.remove('hidden');
+
+        const children = this.dataStore.getParentStudents(this.dataStore.currentUser.id);
+        if (children.length > 0) {
+            this.selectedChild = children[0];
+            this.renderChildSelector(children);
+            this.renderParentTodayView();
+        } else {
+            document.getElementById('child-selector').innerHTML = '<p style="padding: 16px; color: #999;">尚未绑定学生，请使用学生提供的绑定码进行绑定</p>';
+        }
+    }
+
+    renderChildSelector(children) {
+        const container = document.getElementById('child-selector');
+        container.innerHTML = children.map(child => `
+            <div class="child-card ${this.selectedChild?.id === child.id ? 'active' : ''}" data-id="${child.id}">
+                <div class="child-avatar">${child.displayName[0]}</div>
+                <span>${child.displayName}</span>
+            </div>
+        `).join('');
+
+        container.querySelectorAll('.child-card').forEach(card => {
+            card.addEventListener('click', () => {
+                this.selectedChild = children.find(c => c.id === card.dataset.id);
+                this.renderChildSelector(children);
+                this.renderParentView();
+            });
+        });
+    }
+
+    switchView(view) {
+        this.currentView = view;
+
+        document.querySelectorAll('.tab-nav .nav-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector(`.tab-nav .nav-btn[data-view="${view}"]`).classList.add('active');
+
+        document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+
+        if (view === 'today') {
+            document.getElementById('today-view').classList.remove('hidden');
+            this.renderTodayView();
+        } else if (view === 'plan') {
+            document.getElementById('plan-view').classList.remove('hidden');
+            this.renderPlanView();
+        } else if (view === 'week') {
+            document.getElementById('week-view').classList.remove('hidden');
+            this.renderWeekView();
+        } else if (view === 'stats') {
+            document.getElementById('stats-view').classList.remove('hidden');
+            this.renderStats('week');
+        } else if (view === 'advice') {
+            document.getElementById('advice-view').classList.remove('hidden');
+            this.renderAdvice();
+        }
+    }
+
+    renderTodayView() {
+        const userId = this.dataStore.currentUser.id;
+        const today = this.dataStore.getTodayStr();
+        const tasks = this.dataStore.getDayTasks(userId, today);
+
+        // 更新进度
+        const completed = tasks.filter(t => t.completed).length;
+        const total = tasks.length;
+        const rate = total > 0 ? completed / total : 0;
+
+        document.getElementById('completed-count').textContent = completed;
+        document.getElementById('total-count').textContent = total;
+
+        // 更新圆环
+        const circle = document.getElementById('today-progress');
+        const circumference = 2 * Math.PI * 45;
+        circle.style.strokeDasharray = circumference;
+        circle.style.strokeDashoffset = circumference * (1 - rate);
+
+        // 按时段渲染任务
+        ['morning', 'afternoon', 'evening'].forEach(slot => {
+            const slotTasks = tasks.filter(t => t.slot === slot);
+            const container = document.getElementById(`${slot}-tasks`);
+
+            if (slotTasks.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📝</div>
+                        <p>该时段暂无任务</p>
+                    </div>
+                `;
+            } else {
+                container.innerHTML = slotTasks.map(task => this.renderTaskCard(task)).join('');
+
+                // 绑定事件
+                container.querySelectorAll('.task-checkbox').forEach(cb => {
+                    cb.addEventListener('click', () => {
+                        this.toggleTask(task.id);
+                    });
+                });
+
+                container.querySelectorAll('.task-action-btn.delete').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.deleteTask(task.id);
+                    });
+                });
+            }
+        });
+    }
+
+    renderTaskCard(task) {
+        const priorityClass = `priority-${task.priority}`;
+        return `
+            <div class="task-card ${task.completed ? 'completed' : ''}" data-id="${task.id}">
+                <div class="task-checkbox"></div>
+                <div class="task-info">
+                    <div class="task-subject">${task.subject}</div>
+                    <div class="task-content">${task.content}</div>
+                    <div class="task-meta">
+                        <span>${task.duration}分钟</span>
+                        <span class="priority-badge ${priorityClass}">${task.priority === 'high' ? '高' : task.priority === 'medium' ? '中' : '低'}</span>
+                    </div>
+                </div>
+                <div class="task-actions">
+                    <button class="task-action-btn delete" title="删除">🗑️</button>
+                </div>
+            </div>
+        `;
+    }
+
+    toggleTask(taskId) {
+        const userId = this.dataStore.currentUser.id;
+        const today = this.dataStore.getTodayStr();
+        const task = this.dataStore.toggleTaskComplete(userId, today, taskId);
+
+        if (task) {
+            this.renderTodayView();
+            if (task.completed) {
+                this.showNotification('任务完成！继续保持！', 'success');
+            }
+        }
+    }
+
+    deleteTask(taskId) {
+        if (confirm('确定要删除这个任务吗？')) {
+            const userId = this.dataStore.currentUser.id;
+            const today = this.dataStore.getTodayStr();
+            this.dataStore.deleteTask(userId, today, taskId);
+            this.renderTodayView();
+            this.showNotification('任务已删除');
+        }
+    }
+
+    openTaskModal() {
+        document.getElementById('task-modal').classList.remove('hidden');
+        document.getElementById('modal-title').textContent = '添加学习任务';
+        document.getElementById('task-form').reset();
+    }
+
+    closeTaskModal() {
+        document.getElementById('task-modal').classList.add('hidden');
+    }
+
+    saveTask() {
+        const userId = this.dataStore.currentUser.id;
+        const today = this.dataStore.getTodayStr();
+
+        const task = {
+            subject: document.getElementById('task-subject').value,
+            slot: document.getElementById('task-slot').value,
+            content: document.getElementById('task-content').value,
+            duration: parseInt(document.getElementById('task-duration').value),
+            priority: document.getElementById('task-priority').value,
+            completed: false
+        };
+
+        this.dataStore.addTask(userId, today, task);
+        this.closeTaskModal();
+        this.renderTodayView();
+        this.showNotification('任务添加成功', 'success');
+    }
+
+    renderWeekView() {
+        const userId = this.dataStore.currentUser.id;
+        const today = new Date();
+        const weekStart = new Date(today);
+        weekStart.setDate(today.getDate() - today.getDay() + 1 + this.currentWeekOffset * 7);
+        const weekStartStr = weekStart.toISOString().split('T')[0];
+
+        const weekDays = this.dataStore.getWeekDays(weekStartStr);
+        const endDay = weekDays[6];
+
+        document.getElementById('week-range').textContent =
+            `${weekStartStr.slice(5)} ~ ${endDay.slice(5)}`;
+
+        const weekGrid = document.getElementById('week-grid');
+        const dayNames = ['一', '二', '三', '四', '五', '六', '日'];
+
+        weekGrid.innerHTML = weekDays.map((date, i) => {
+            const tasks = this.dataStore.getDayTasks(userId, date);
+            const completed = tasks.filter(t => t.completed).length;
+            const total = tasks.length;
+            const rate = total > 0 ? completed / total : 0;
+            const isToday = date === this.dataStore.getTodayStr();
+
+            return `
+                <div class="week-day ${isToday ? 'active' : ''}" data-date="${date}">
+                    <div class="week-day-name">周${dayNames[i]}</div>
+                    <div class="week-day-date">${date.slice(8)}</div>
+                    <div class="week-day-progress">${completed}/${total}</div>
+                    <div class="week-day-bar">
+                        <div class="week-day-bar-fill" style="width: ${rate * 100}%"></div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // 点击某天切换到该日
+        weekGrid.querySelectorAll('.week-day').forEach(day => {
+            day.addEventListener('click', () => {
+                // 可以扩展为查看某天详情
+                this.showNotification(`${day.dataset.date} 的任务详情功能开发中...`);
+            });
+        });
+
+        // 周统计
+        let weekTotal = 0, weekCompleted = 0;
+        weekDays.forEach(date => {
+            const tasks = this.dataStore.getDayTasks(userId, date);
+            weekTotal += tasks.length;
+            weekCompleted += tasks.filter(t => t.completed).length;
+        });
+
+        document.getElementById('week-stats').innerHTML = `
+            <div class="bar-chart">
+                <div class="bar-item">
+                    <div class="bar-label">本周完成</div>
+                    <div class="bar-track">
+                        <div class="bar-fill" style="width: ${weekTotal > 0 ? (weekCompleted / weekTotal * 100) : 0}%; background: var(--primary);">
+                            <span class="bar-value">${weekCompleted}/${weekTotal}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <p style="margin-top: 12px; color: #666; font-size: 14px;">
+                完成率: ${weekTotal > 0 ? Math.round(weekCompleted / weekTotal * 100) : 0}%
+            </p>
+        `;
+    }
+
+    renderStats(period) {
+        const userId = this.dataStore.currentUser.id;
+        const stats = this.dataStore.getStats(userId, period);
+
+        // 科目统计
+        const subjectChart = document.getElementById('subject-chart');
+        const subjectData = Object.entries(stats.subjectStats)
+            .filter(([_, s]) => s.total > 0)
+            .sort((a, b) => b[1].total - a[1].total);
+
+        const maxTotal = Math.max(...subjectData.map(([_, s]) => s.total), 1);
+
+        subjectChart.innerHTML = `
+            <div class="bar-chart">
+                ${subjectData.map(([subject, s]) => `
+                    <div class="bar-item">
+                        <div class="bar-label">${subject}</div>
+                        <div class="bar-track">
+                            <div class="bar-fill" style="width: ${(s.total / maxTotal * 100)}%; background: ${this.getSubjectColor(subject)};">
+                                <span class="bar-value">${s.completed}/${s.total}</span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+
+        // 时间分布 - 饼图用条形图代替
+        const timeChart = document.getElementById('time-chart');
+        const timeData = stats.timeDistribution;
+        const totalTime = Object.values(timeData).reduce((a, b) => a + b, 0);
+        const timeLabels = { morning: '上午', afternoon: '下午', evening: '晚上' };
+        const timeColors = { morning: '#4a90e2', afternoon: '#52c41a', evening: '#faad14' };
+
+        timeChart.innerHTML = `
+            <div class="bar-chart">
+                ${Object.entries(timeData).map(([slot, minutes]) => `
+                    <div class="bar-item">
+                        <div class="bar-label">${timeLabels[slot]}</div>
+                        <div class="bar-track">
+                            <div class="bar-fill" style="width: ${totalTime > 0 ? (minutes / totalTime * 100) : 0}%; background: ${timeColors[slot]};">
+                                <span class="bar-value">${Math.round(minutes / 60 * 10) / 10}h</span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+            <p style="margin-top: 12px; color: #666; font-size: 14px;">
+                总学习时长: ${Math.round(totalTime / 60 * 10) / 10} 小时
+            </p>
+        `;
+
+        // 趋势图
+        this.renderTrendChart(stats.dailyStats);
+    }
+
+    renderTrendChart(dailyStats) {
+        const container = document.getElementById('trend-chart');
+        const dates = Object.keys(dailyStats).sort();
+        if (dates.length === 0) {
+            container.innerHTML = '<p style="text-align: center; color: #999;">暂无数据</p>';
+            return;
+        }
+
+        const data = dates.map(d => {
+            const s = dailyStats[d];
+            return s.total > 0 ? s.completed / s.total : 0;
+        });
+
+        const width = container.clientWidth || 300;
+        const height = 200;
+        const padding = 30;
+
+        const maxVal = 1;
+        const minVal = 0;
+        const xStep = (width - padding * 2) / (data.length - 1 || 1);
+        const yScale = (height - padding * 2) / (maxVal - minVal);
+
+        const points = data.map((val, i) => ({
+            x: padding + i * xStep,
+            y: height - padding - val * yScale
+        }));
+
+        const pathD = points.length > 0
+            ? `M ${points[0].x} ${points[0].y} ` + points.slice(1).map(p => `L ${p.x} ${p.y}`).join(' ')
+            : '';
+
+        const areaD = points.length > 0
+            ? `${pathD} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`
+            : '';
+
+        const svg = `
+            <svg class="trend-chart-svg" viewBox="0 0 ${width} ${height}">
+                <!-- 网格线 -->
+                ${[0, 0.25, 0.5, 0.75, 1].map(v => {
+                    const y = height - padding - v * yScale;
+                    return `<line class="trend-grid" x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}"/>`;
+                }).join('')}
+
+                <!-- 面积 -->
+                <path class="trend-area" d="${areaD}"/>
+
+                <!-- 折线 -->
+                <path class="trend-line" d="${pathD}"/>
+
+                <!-- 数据点 -->
+                ${points.map((p, i) => `
+                    <circle class="trend-point" cx="${p.x}" cy="${p.y}"
+                            data-date="${dates[i]}" data-value="${Math.round(data[i] * 100)}%"/>
+                `).join('')}
+
+                <!-- X轴标签 -->
+                ${dates.map((d, i) => {
+                    const x = padding + i * xStep;
+                    return `<text x="${x}" y="${height - 10}" font-size="10" text-anchor="middle" fill="#999">${d.slice(5)}</text>`;
+                }).join('')}
+
+                <!-- Y轴标签 -->
+                ${[0, 50, 100].map(v => {
+                    const y = height - padding - (v / 100) * yScale;
+                    return `<text x="${padding - 5}" y="${y + 4}" font-size="10" text-anchor="end" fill="#999">${v}%</text>`;
+                }).join('')}
+            </svg>
+        `;
+
+        container.innerHTML = svg;
+    }
+
+    getSubjectColor(subject) {
+        const colors = {
+            '语文': '#e74c3c',
+            '数学': '#3498db',
+            '英语': '#9b59b6',
+            '物理': '#1abc9c',
+            '化学': '#f39c12',
+            '课外编程': '#2ecc71',
+            '篮球': '#e67e22',
+            '其他': '#95a5a6'
+        };
+        return colors[subject] || '#666';
+    }
+
+    renderAdvice() {
+        const userId = this.dataStore.currentUser.id;
+        const advice = this.adviceEngine.generateAdvice(userId);
+
+        const container = document.getElementById('advice-list');
+        container.innerHTML = advice.map(a => `
+            <div class="advice-card ${a.type}">
+                <div class="advice-title">
+                    ${a.type === 'success' ? '✅' : a.type === 'warning' ? '⚠️' : '❌'}
+                    ${a.title}
+                </div>
+                <div class="advice-content">${a.content}</div>
+                <div class="advice-meta">来源: ${a.source} · ${new Date().toLocaleString()}</div>
+            </div>
+        `).join('');
+    }
+
+    // 家长端视图
+    renderParentView() {
+        const view = document.querySelector('#parent-screen .nav-btn.active').dataset.view;
+        if (view === 'parent-today') this.renderParentTodayView();
+        else if (view === 'parent-week') this.renderParentWeekView();
+        else if (view === 'parent-stats') this.renderParentStats();
+        else if (view === 'parent-advice') this.renderParentAdvice();
+    }
+
+    renderParentTodayView() {
+        if (!this.selectedChild) return;
+        const userId = this.selectedChild.id;
+        const today = this.dataStore.getTodayStr();
+        const tasks = this.dataStore.getDayTasks(userId, today);
+        const completed = tasks.filter(t => t.completed).length;
+        const total = tasks.length;
+        const rate = total > 0 ? completed / total : 0;
+
+        document.getElementById('parent-today-progress').innerHTML = `
+            <div class="progress-overview">
+                <div class="progress-ring">
+                    <svg viewBox="0 0 100 100">
+                        <circle class="progress-bg" cx="50" cy="50" r="45"/>
+                        <circle class="progress-fill" cx="50" cy="50" r="45"
+                                style="stroke-dasharray: ${2 * Math.PI * 45}; stroke-dashoffset: ${2 * Math.PI * 45 * (1 - rate)}"/>
+                    </svg>
+                    <div class="progress-text">
+                        <span>${completed}</span>/${total}
+                    </div>
+                </div>
+                <p class="progress-label">${this.selectedChild.displayName} 今日完成度</p>
+            </div>
+            <div style="padding: 16px;">
+                <h3 style="margin-bottom: 12px;">今日任务</h3>
+                ${tasks.length === 0 ? '<p style="color: #999;">暂无任务</p>' :
+                    tasks.map(t => `
+                        <div class="task-card ${t.completed ? 'completed' : ''}" style="margin-bottom: 8px;">
+                            <div class="task-checkbox ${t.completed ? 'completed' : ''}"></div>
+                            <div class="task-info">
+                                <div class="task-subject">${t.subject}</div>
+                                <div class="task-content">${t.content}</div>
+                            </div>
+                        </div>
+                    `).join('')
+                }
+            </div>
+        `;
+    }
+
+    renderParentWeekView() {
+        if (!this.selectedChild) return;
+        const userId = this.selectedChild.id;
+        const today = new Date();
+        const weekStart = new Date(today);
+        weekStart.setDate(today.getDate() - today.getDay() + 1);
+        const weekStartStr = weekStart.toISOString().split('T')[0];
+        const weekDays = this.dataStore.getWeekDays(weekStartStr);
+
+        const weekGrid = document.getElementById('parent-week-grid');
+        const dayNames = ['一', '二', '三', '四', '五', '六', '日'];
+
+        weekGrid.innerHTML = weekDays.map((date, i) => {
+            const tasks = this.dataStore.getDayTasks(userId, date);
+            const completed = tasks.filter(t => t.completed).length;
+            const total = tasks.length;
+            const rate = total > 0 ? completed / total : 0;
+            const isToday = date === this.dataStore.getTodayStr();
+
+            return `
+                <div class="week-day ${isToday ? 'active' : ''}">
+                    <div class="week-day-name">周${dayNames[i]}</div>
+                    <div class="week-day-date">${date.slice(8)}</div>
+                    <div class="week-day-progress">${completed}/${total}</div>
+                    <div class="week-day-bar">
+                        <div class="week-day-bar-fill" style="width: ${rate * 100}%"></div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    renderParentStats() {
+        if (!this.selectedChild) return;
+        this.renderStats('week');
+    }
+
+    renderParentAdvice() {
+        if (!this.selectedChild) return;
+        const advice = this.adviceEngine.generateAdvice(this.selectedChild.id);
+
+        document.getElementById('parent-advice-content').innerHTML = advice.map(a => `
+            <div class="advice-card ${a.type}">
+                <div class="advice-title">
+                    ${a.type === 'success' ? '✅' : a.type === 'warning' ? '⚠️' : '❌'}
+                    ${a.title}
+                </div>
+                <div class="advice-content">${a.content}</div>
+                <div class="advice-meta">来源: ${a.source}</div>
+            </div>
+        `).join('');
+    }
+
+    // ==================== 计划制定视图 ====================
+    renderPlanView() {
+        const userId = this.dataStore.currentUser.id;
+        const today = this.dataStore.getTodayStr();
+        const nextWeekStart = this.dataStore.getNextWeekStart(today);
+        
+        // 计算当前显示的周（基于 planWeekOffset，默认显示下周）
+        if (!this.planWeekOffset) this.planWeekOffset = 0;
+        
+        const baseDate = new Date(today);
+        baseDate.setDate(baseDate.getDate() + this.planWeekOffset * 7);
+        const displayWeekStart = this.dataStore.getWeekStart(baseDate.toISOString().split('T')[0]);
+        
+        const weekDays = this.dataStore.getWeekDays(displayWeekStart);
+        const isConfirmed = this.dataStore.isWeeklyPlanConfirmed(userId, displayWeekStart);
+        
+        // 更新状态标签
+        const statusEl = document.getElementById('plan-status');
+        if (isConfirmed) {
+            statusEl.innerHTML = '<span class="status-badge confirmed">已确认</span>';
+        } else {
+            statusEl.innerHTML = '<span class="status-badge pending">待制定</span>';
+        }
+        
+        // 更新周标签
+        const weekLabel = document.getElementById('plan-week-label');
+        const todayWeekStart = this.dataStore.getWeekStart(today);
+        if (displayWeekStart === todayWeekStart) {
+            weekLabel.textContent = '本周';
+        } else if (displayWeekStart === nextWeekStart) {
+            weekLabel.textContent = '下周';
+        } else {
+            weekLabel.textContent = displayWeekStart.slice(5) + '周';
+        }
+        
+        // 获取或创建周计划模板
+        const weeklyPlan = this.dataStore.getWeeklyPlanTemplate(userId, displayWeekStart);
+        
+        // 渲染7天计划表
+        const container = document.getElementById('plan-days');
+        const dayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+        
+        container.innerHTML = weekDays.map((date, dayIndex) => {
+            const dayPlan = weeklyPlan[date] || { morning: [null, null], afternoon: [null, null], evening: [null, null] };
+            const isToday = date === today;
+            
+            return `
+                <div class="plan-day-card ${isToday ? 'plan-today' : ''}">
+                    <div class="plan-day-header">
+                        <span class="plan-day-title">${dayNames[dayIndex]} ${isToday ? '(今天)' : ''}</span>
+                        <span class="plan-day-date">${date}</span>
+                    </div>
+                    
+                    <div class="plan-slot">
+                        <div class="plan-slot-header">上午 2小时</div>
+                        <div class="plan-slot-items">
+                            ${this.renderPlanItem(userId, displayWeekStart, date, 'morning', 0, dayPlan.morning?.[0], isConfirmed)}
+                            ${this.renderPlanItem(userId, displayWeekStart, date, 'morning', 1, dayPlan.morning?.[1], isConfirmed)}
+                        </div>
+                    </div>
+                    
+                    <div class="plan-slot">
+                        <div class="plan-slot-header">下午 2小时</div>
+                        <div class="plan-slot-items">
+                            ${this.renderPlanItem(userId, displayWeekStart, date, 'afternoon', 0, dayPlan.afternoon?.[0], isConfirmed)}
+                            ${this.renderPlanItem(userId, displayWeekStart, date, 'afternoon', 1, dayPlan.afternoon?.[1], isConfirmed)}
+                        </div>
+                    </div>
+                    
+                    <div class="plan-slot">
+                        <div class="plan-slot-header">晚上 2.5小时</div>
+                        <div class="plan-slot-items">
+                            ${this.renderPlanItem(userId, displayWeekStart, date, 'evening', 0, dayPlan.evening?.[0], isConfirmed)}
+                            ${this.renderPlanItem(userId, displayWeekStart, date, 'evening', 1, dayPlan.evening?.[1], isConfirmed)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        // 绑定点击事件
+        container.querySelectorAll('.plan-item-empty').forEach(el => {
+            el.addEventListener('click', () => {
+                if (isConfirmed) {
+                    this.showNotification('本周计划已确认，无法修改。如需调整请使用"今日"视图的添加任务功能。', 'warning');
+                    return;
+                }
+                this.openPlanItemModal(
+                    el.dataset.date,
+                    el.dataset.slot,
+                    parseInt(el.dataset.index)
+                );
+            });
+        });
+        
+        container.querySelectorAll('.plan-item-filled').forEach(el => {
+            el.addEventListener('click', () => {
+                if (isConfirmed) {
+                    this.showNotification('本周计划已确认，无法修改。', 'warning');
+                    return;
+                }
+                this.editPlanItemModal(
+                    el.dataset.date,
+                    el.dataset.slot,
+                    parseInt(el.dataset.index),
+                    {
+                        subject: el.dataset.subject,
+                        content: el.dataset.content,
+                        duration: parseInt(el.dataset.duration)
+                    }
+                );
+            });
+        });
+        
+        container.querySelectorAll('.plan-item-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (isConfirmed) {
+                    this.showNotification('本周计划已确认，无法删除。', 'warning');
+                    return;
+                }
+                if (confirm('确定要删除这个计划项吗？')) {
+                    this.dataStore.deleteWeeklyPlanItem(
+                        userId,
+                        displayWeekStart,
+                        btn.dataset.date,
+                        btn.dataset.slot,
+                        parseInt(btn.dataset.index)
+                    );
+                    this.renderPlanView();
+                    this.showNotification('计划项已删除');
+                }
+            });
+        });
+        
+        // 更新按钮状态
+        const saveBtn = document.getElementById('save-plan-btn');
+        if (isConfirmed) {
+            saveBtn.textContent = '本周计划已确认';
+            saveBtn.disabled = true;
+        } else {
+            saveBtn.textContent = '确认并生成本周任务';
+            saveBtn.disabled = false;
+        }
+    }
+    
+    renderPlanItem(userId, weekStart, date, slot, index, item, isConfirmed) {
+        if (item && item.subject) {
+            return `
+                <div class="plan-item-filled" 
+                     data-date="${date}" 
+                     data-slot="${slot}" 
+                     data-index="${index}"
+                     data-subject="${item.subject}"
+                     data-content="${item.content || ''}"
+                     data-duration="${item.duration || 60}">
+                    <span class="plan-item-subject-badge ${item.subject}">${item.subject}</span>
+                    <div class="plan-item-info">
+                        <div class="plan-item-content">${item.content || item.subject + '学习'}</div>
+                        <div class="plan-item-duration">${item.duration || 60}分钟</div>
+                    </div>
+                    <button class="plan-item-delete" 
+                            data-date="${date}" 
+                            data-slot="${slot}" 
+                            data-index="${index}"
+                            ${isConfirmed ? 'style="display:none"' : ''}>🗑️</button>
+                </div>
+            `;
+        } else {
+            return `
+                <div class="plan-item-empty" 
+                     data-date="${date}" 
+                     data-slot="${slot}" 
+                     data-index="${index}">
+                    <span class="add-icon">+</span>
+                    <span>添加计划</span>
+                </div>
+            `;
+        }
+    }
+    
+    openPlanItemModal(date, slot, index) {
+        document.getElementById('plan-item-modal').classList.remove('hidden');
+        document.getElementById('plan-modal-title').textContent = '添加计划项';
+        document.getElementById('plan-item-form').reset();
+        document.getElementById('plan-item-day').value = date;
+        document.getElementById('plan-item-slot').value = slot;
+        document.getElementById('plan-item-index').value = index;
+    }
+    
+    editPlanItemModal(date, slot, index, item) {
+        this.openPlanItemModal(date, slot, index);
+        document.getElementById('plan-modal-title').textContent = '编辑计划项';
+        document.getElementById('plan-item-subject').value = item.subject;
+        document.getElementById('plan-item-content').value = item.content || '';
+        document.getElementById('plan-item-duration').value = item.duration || 60;
+    }
+    
+    closePlanItemModal() {
+        document.getElementById('plan-item-modal').classList.add('hidden');
+    }
+    
+    savePlanItem() {
+        const userId = this.dataStore.currentUser.id;
+        const today = this.dataStore.getTodayStr();
+        const weekStart = this.dataStore.getWeekStart(
+            new Date(document.getElementById('plan-item-day').value).toISOString().split('T')[0]
+        );
+        
+        const date = document.getElementById('plan-item-day').value;
+        const slot = document.getElementById('plan-item-slot').value;
+        const index = parseInt(document.getElementById('plan-item-index').value);
+        
+        const item = {
+            subject: document.getElementById('plan-item-subject').value,
+            content: document.getElementById('plan-item-content').value,
+            duration: parseInt(document.getElementById('plan-item-duration').value)
+        };
+        
+        this.dataStore.saveWeeklyPlanItem(userId, weekStart, date, slot, index, item);
+        this.closePlanItemModal();
+        this.renderPlanView();
+        this.showNotification('计划项已保存', 'success');
+    }
+    
+    confirmWeeklyPlan() {
+        const userId = this.dataStore.currentUser.id;
+        const today = this.dataStore.getTodayStr();
+        
+        if (!this.planWeekOffset) this.planWeekOffset = 0;
+        const baseDate = new Date(today);
+        baseDate.setDate(baseDate.getDate() + this.planWeekOffset * 7);
+        const displayWeekStart = this.dataStore.getWeekStart(baseDate.toISOString().split('T')[0]);
+        
+        // 检查是否已填写
+        const weeklyPlan = this.dataStore.data.weeklyPlans[userId]?.[displayWeekStart];
+        if (!weeklyPlan) {
+            this.showNotification('请先填写计划内容', 'warning');
+            return;
+        }
+        
+        let hasItems = false;
+        Object.values(weeklyPlan).forEach(day => {
+            ['morning', 'afternoon', 'evening'].forEach(slot => {
+                if (day[slot]) {
+                    day[slot].forEach(item => {
+                        if (item && item.subject) hasItems = true;
+                    });
+                }
+            });
+        });
+        
+        if (!hasItems) {
+            this.showNotification('请至少填写一个计划项', 'warning');
+            return;
+        }
+        
+        // 显示确认预览
+        this.showPlanPreview(userId, displayWeekStart);
+    }
+    
+    showPlanPreview(userId, weekStart) {
+        const weekDays = this.dataStore.getWeekDays(weekStart);
+        const weeklyPlan = this.dataStore.data.weeklyPlans[userId][weekStart];
+        const dayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+        
+        const slotLabels = { morning: '上午', afternoon: '下午', evening: '晚上' };
+        
+        let previewHTML = `
+            <div class="plan-preview-overlay" id="plan-preview-overlay">
+                <div class="plan-preview-content">
+                    <div class="plan-preview-header">
+                        <h3>计划确认预览</h3>
+                        <button class="close-modal" onclick="ui.closePlanPreview()">✕</button>
+                    </div>
+                    <div class="plan-preview-days">
+        `;
+        
+        weekDays.forEach((date, i) => {
+            const dayPlan = weeklyPlan[date];
+            const items = [];
+            
+            ['morning', 'afternoon', 'evening'].forEach(slot => {
+                if (dayPlan[slot]) {
+                    dayPlan[slot].forEach(item => {
+                        if (item && item.subject) {
+                            items.push({
+                                slot: slotLabels[slot],
+                                subject: item.subject,
+                                content: item.content || item.subject + '学习',
+                                duration: item.duration || 60
+                            });
+                        }
+                    });
+                }
+            });
+            
+            if (items.length > 0) {
+                previewHTML += `
+                    <div class="plan-preview-day">
+                        <div class="plan-preview-day-title">${dayNames[i]} ${date}</div>
+                        <div class="plan-preview-items">
+                            ${items.map(item => `
+                                <span class="plan-preview-item">${item.slot} · ${item.subject} · ${item.duration}分钟</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+        });
+        
+        previewHTML += `
+                    </div>
+                    <div class="plan-preview-actions">
+                        <button class="plan-preview-cancel" onclick="ui.closePlanPreview()">再改改</button>
+                        <button class="plan-preview-confirm" onclick="ui.finalConfirmPlan('${weekStart}')">确认生成任务</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.insertAdjacentHTML('beforeend', previewHTML);
+    }
+    
+    closePlanPreview() {
+        const overlay = document.getElementById('plan-preview-overlay');
+        if (overlay) overlay.remove();
+    }
+    
+    finalConfirmPlan(weekStart) {
+        const userId = this.dataStore.currentUser.id;
+        const success = this.dataStore.confirmWeeklyPlan(userId, weekStart);
+        
+        if (success) {
+            this.closePlanPreview();
+            this.renderPlanView();
+            this.showNotification('周计划已确认，任务已生成！', 'success');
+        } else {
+            this.showNotification('计划确认失败', 'error');
+        }
+    }
+    
+    clearWeeklyPlan() {
+        if (!confirm('确定要清空当前周的所有计划吗？')) return;
+        
+        const userId = this.dataStore.currentUser.id;
+        const today = this.dataStore.getTodayStr();
+        
+        if (!this.planWeekOffset) this.planWeekOffset = 0;
+        const baseDate = new Date(today);
+        baseDate.setDate(baseDate.getDate() + this.planWeekOffset * 7);
+        const displayWeekStart = this.dataStore.getWeekStart(baseDate.toISOString().split('T')[0]);
+        
+        this.dataStore.clearWeeklyPlan(userId, displayWeekStart);
+        this.renderPlanView();
+        this.showNotification('计划已清空');
+    }
+
+    // 设置
+    openSettings() {
+        document.getElementById('settings-modal').classList.remove('hidden');
+        const user = this.dataStore.currentUser;
+        if (user && user.role === 'student') {
+            document.getElementById('parent-code-display').textContent = user.parentCode || 'N/A';
+        }
+    }
+
+    closeSettings() {
+        document.getElementById('settings-modal').classList.add('hidden');
+    }
+
+    generateWeekPlan() {
+        const userId = this.dataStore.currentUser.id;
+        this.dataStore.initWeekPlans(userId);
+        this.showNotification('已重新生成本周计划', 'success');
+    }
+
+    exportData() {
+        const data = this.dataStore.exportData();
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `study-plan-backup-${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        this.showNotification('数据已导出', 'success');
+    }
+
+    importData(file) {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const result = this.dataStore.importData(e.target.result);
+            if (result.success) {
+                this.showNotification('数据导入成功', 'success');
+                location.reload();
+            } else {
+                this.showNotification(result.message, 'error');
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    updateDateDisplay() {
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('zh-CN', {
+            month: 'short',
+            day: 'numeric',
+            weekday: 'short'
+        });
+        document.getElementById('current-date').textContent = dateStr;
+        const parentDate = document.getElementById('parent-current-date');
+        if (parentDate) parentDate.textContent = dateStr;
+    }
+
+    showNotification(message, type = 'info') {
+        const container = document.getElementById('notification-container');
+        const notification = document.createElement('div');
+        notification.className = `notification ${type}`;
+        notification.textContent = message;
+        container.appendChild(notification);
+
+        setTimeout(() => {
+            notification.style.opacity = '0';
+            notification.style.transform = 'translateY(-20px)';
+            setTimeout(() => notification.remove(), 300);
+        }, 3000);
+    }
+}
+
+// ==================== 初始化 ====================
+document.addEventListener('DOMContentLoaded', () => {
+    const dataStore = new DataStore();
+    const adviceEngine = new AIAdviceEngine(dataStore);
+    const ui = new UIController(dataStore, adviceEngine);
+
+    // 注册 Service Worker（PWA支持）
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('data:text/javascript,' + encodeURIComponent(`
+            self.addEventListener('install', e => self.skipWaiting());
+            self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+            self.addEventListener('fetch', e => e.respondWith(fetch(e.request).catch(() => new Response('Offline'))));
+        `)).catch(() => console.log('SW registration skipped'));
+    }
+});

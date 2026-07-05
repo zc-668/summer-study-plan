@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>暑期学习计划 - 初二</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#4a90e2">
+</head>
+<body>
+    <div id="app">
+        <!-- 登录/注册界面 -->
+        <div id="auth-screen" class="screen">
+            <div class="auth-container">
+                <h1>暑期学习计划</h1>
+                <p class="subtitle">初二 · 8周 · 每日进步</p>
+                <div class="auth-tabs">
+                    <button class="tab-btn active" data-tab="login">登录</button>
+                    <button class="tab-btn" data-tab="register">注册</button>
+                </div>
+                <form id="login-form" class="auth-form">
+                    <input type="text" id="login-username" placeholder="用户名" required>
+                    <input type="password" id="login-password" placeholder="密码" required>
+                    <label class="role-select">
+                        <input type="radio" name="role" value="student" checked> 学生
+                        <input type="radio" name="role" value="parent"> 家长
+                    </label>
+                    <button type="submit">登录</button>
+                </form>
+                <form id="register-form" class="auth-form hidden">
+                    <input type="text" id="reg-username" placeholder="用户名" required>
+                    <input type="password" id="reg-password" placeholder="密码" required>
+                    <input type="password" id="reg-password-confirm" placeholder="确认密码" required>
+                    <input type="text" id="reg-display-name" placeholder="显示名称（如：小明）" required>
+                    <label class="role-select">
+                        <input type="radio" name="reg-role" value="student" checked> 学生
+                        <input type="radio" name="reg-role" value="parent"> 家长
+                    </label>
+                    <input type="text" id="reg-parent-code" placeholder="家长绑定码（学生注册时必填）" class="student-only">
+                    <button type="submit">注册</button>
+                </form>
+                <button id="guest-btn" class="guest-btn">免登录试用（数据仅保存在本地）</button>
+            </div>
+        </div>
+
+        <!-- 主界面 - 学生端 -->
+        <div id="student-screen" class="screen hidden">
+            <header class="app-header">
+                <h1>我的学习计划</h1>
+                <div class="header-actions">
+                    <span id="current-date"></span>
+                    <button id="settings-btn" class="icon-btn">⚙️</button>
+                    <button id="logout-btn" class="icon-btn">退出</button>
+                </div>
+            </header>
+
+            <nav class="tab-nav">
+                <button class="nav-btn active" data-view="today">今日</button>
+                <button class="nav-btn" data-view="plan">计划</button>
+                <button class="nav-btn" data-view="week">本周</button>
+                <button class="nav-btn" data-view="stats">统计</button>
+                <button class="nav-btn" data-view="advice">建议</button>
+            </nav>
+
+            <!-- 今日视图 -->
+            <div id="today-view" class="view">
+                <div class="progress-overview">
+                    <div class="progress-ring">
+                        <svg viewBox="0 0 100 100">
+                            <circle class="progress-bg" cx="50" cy="50" r="45"/>
+                            <circle class="progress-fill" id="today-progress" cx="50" cy="50" r="45"/>
+                        </svg>
+                        <div class="progress-text">
+                            <span id="completed-count">0</span>/<span id="total-count">0</span>
+                        </div>
+                    </div>
+                    <p class="progress-label">今日完成度</p>
+                </div>
+
+                <div class="time-slots">
+                    <div class="slot" data-slot="morning">
+                        <h3>上午 2小时</h3>
+                        <div class="tasks" id="morning-tasks"></div>
+                    </div>
+                    <div class="slot" data-slot="afternoon">
+                        <h3>下午 2小时</h3>
+                        <div class="tasks" id="afternoon-tasks"></div>
+                    </div>
+                    <div class="slot" data-slot="evening">
+                        <h3>晚上 2.5小时</h3>
+                        <div class="tasks" id="evening-tasks"></div>
+                    </div>
+                </div>
+
+                <button id="add-task-btn" class="fab-btn">+</button>
+            </div>
+
+            <!-- 计划制定视图 -->
+            <div id="plan-view" class="view hidden">
+                <div class="plan-header">
+                    <div class="plan-week-selector">
+                        <button id="plan-prev-week">←</button>
+                        <span id="plan-week-label">下周</span>
+                        <button id="plan-next-week">→</button>
+                    </div>
+                    <div class="plan-status" id="plan-status">
+                        <span class="status-badge pending">待制定</span>
+                    </div>
+                </div>
+                <p class="plan-hint">点击时段添加计划，每项计划包含科目和具体内容</p>
+
+                <div class="plan-days" id="plan-days">
+                    <!-- 动态生成7天计划表 -->
+                </div>
+
+                <div class="plan-actions">
+                    <button id="save-plan-btn" class="plan-save-btn">确认并生成本周任务</button>
+                    <button id="clear-plan-btn" class="plan-clear-btn">清空重填</button>
+                </div>
+            </div>
+
+            <!-- 添加计划项弹窗 -->
+            <div id="plan-item-modal" class="modal hidden">
+                <div class="modal-content">
+                    <h3 id="plan-modal-title">添加计划</h3>
+                    <form id="plan-item-form">
+                        <input type="hidden" id="plan-item-day">
+                        <input type="hidden" id="plan-item-slot">
+                        <input type="hidden" id="plan-item-index">
+                        <div class="form-group">
+                            <label>科目</label>
+                            <select id="plan-item-subject" required>
+                                <option value="">请选择科目</option>
+                                <option value="语文">语文</option>
+                                <option value="数学">数学</option>
+                                <option value="英语">英语</option>
+                                <option value="物理">物理</option>
+                                <option value="化学">化学</option>
+                                <option value="课外编程">课外编程</option>
+                                <option value="篮球">篮球</option>
+                                <option value="其他">其他</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>具体内容</label>
+                            <input type="text" id="plan-item-content" placeholder="例如：背诵古诗《静夜思》、完成练习册P20-25" required>
+                        </div>
+                        <div class="form-group">
+                            <label>预计时长（分钟）</label>
+                            <select id="plan-item-duration" required>
+                                <option value="30">30分钟</option>
+                                <option value="45">45分钟</option>
+                                <option value="60" selected>60分钟</option>
+                                <option value="75">75分钟</option>
+                                <option value="90">90分钟</option>
+                            </select>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" id="cancel-plan-item">取消</button>
+                            <button type="submit">保存</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- 本周视图 -->
+            <div id="week-view" class="view hidden">
+                <div class="week-header">
+                    <button id="prev-week">←</button>
+                    <span id="week-range"></span>
+                    <button id="next-week">→</button>
+                </div>
+                <div class="week-grid" id="week-grid"></div>
+                <div class="week-summary">
+                    <h3>本周概览</h3>
+                    <div id="week-stats"></div>
+                </div>
+            </div>
+
+            <!-- 统计视图 -->
+            <div id="stats-view" class="view hidden">
+                <div class="stats-filters">
+                    <button class="filter-btn active" data-period="week">本周</button>
+                    <button class="filter-btn" data-period="month">本月</button>
+                    <button class="filter-btn" data-period="all">全部</button>
+                </div>
+                <div class="stats-charts">
+                    <div class="chart-container">
+                        <h3>科目完成情况</h3>
+                        <div id="subject-chart" class="chart"></div>
+                    </div>
+                    <div class="chart-container">
+                        <h3>时间分布</h3>
+                        <div id="time-chart" class="chart"></div>
+                    </div>
+                    <div class="chart-container">
+                        <h3>趋势分析</h3>
+                        <div id="trend-chart" class="chart"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 建议视图 -->
+            <div id="advice-view" class="view hidden">
+                <div class="advice-header">
+                    <h2>AI 学习建议</h2>
+                    <button id="refresh-advice" class="refresh-btn">刷新建议</button>
+                </div>
+                <div id="advice-list" class="advice-list"></div>
+            </div>
+        </div>
+
+        <!-- 主界面 - 家长端 -->
+        <div id="parent-screen" class="screen hidden">
+            <header class="app-header">
+                <h1>家长监督台</h1>
+                <div class="header-actions">
+                    <span id="parent-current-date"></span>
+                    <button id="parent-logout-btn" class="icon-btn">退出</button>
+                </div>
+            </header>
+
+            <div class="child-selector" id="child-selector"></div>
+
+            <nav class="tab-nav">
+                <button class="nav-btn active" data-view="parent-today">今日</button>
+                <button class="nav-btn" data-view="parent-week">本周</button>
+                <button class="nav-btn" data-view="parent-stats">统计</button>
+                <button class="nav-btn" data-view="parent-advice">建议</button>
+            </nav>
+
+            <div id="parent-today-view" class="view">
+                <div class="child-progress" id="parent-today-progress"></div>
+            </div>
+
+            <div id="parent-week-view" class="view hidden">
+                <div class="week-grid" id="parent-week-grid"></div>
+            </div>
+
+            <div id="parent-stats-view" class="view hidden">
+                <div id="parent-stats-content"></div>
+            </div>
+
+            <div id="parent-advice-view" class="view hidden">
+                <div id="parent-advice-content"></div>
+            </div>
+        </div>
+
+        <!-- 添加/编辑任务弹窗 -->
+        <div id="task-modal" class="modal hidden">
+            <div class="modal-content">
+                <h3 id="modal-title">添加学习任务</h3>
+                <form id="task-form">
+                    <input type="hidden" id="task-id">
+                    <div class="form-group">
+                        <label>科目</label>
+                        <select id="task-subject" required>
+                            <option value="语文">语文</option>
+                            <option value="数学">数学</option>
+                            <option value="英语">英语</option>
+                            <option value="物理">物理</option>
+                            <option value="化学">化学</option>
+                            <option value="课外编程">课外编程</option>
+                            <option value="篮球">篮球</option>
+                            <option value="其他">其他</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>时间段</label>
+                        <select id="task-slot" required>
+                            <option value="morning">上午</option>
+                            <option value="afternoon">下午</option>
+                            <option value="evening">晚上</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>具体内容</label>
+                        <input type="text" id="task-content" placeholder="例如：背诵古诗、完成练习册P20-25" required>
+                    </div>
+                    <div class="form-group">
+                        <label>预计时长（分钟）</label>
+                        <input type="number" id="task-duration" min="5" max="180" value="30" required>
+                    </div>
+                    <div class="form-group">
+                        <label>优先级</label>
+                        <select id="task-priority">
+                            <option value="high">高</option>
+                            <option value="medium" selected>中</option>
+                            <option value="low">低</option>
+                        </select>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="cancel-task">取消</button>
+                        <button type="submit">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- 设置弹窗 -->
+        <div id="settings-modal" class="modal hidden">
+            <div class="modal-content">
+                <h3>设置</h3>
+                <div class="settings-list">
+                    <div class="setting-item">
+                        <label>生成周计划</label>
+                        <button id="generate-week-plan">自动生成本周计划</button>
+                    </div>
+                    <div class="setting-item">
+                        <label>数据管理</label>
+                        <button id="export-data">导出数据</button>
+                        <button id="import-data">导入数据</button>
+                        <input type="file" id="import-file" accept=".json" hidden>
+                    </div>
+                    <div class="setting-item">
+                        <label>提醒设置</label>
+                        <label class="toggle">
+                            <input type="checkbox" id="enable-reminders" checked>
+                            <span class="toggle-slider"></span>
+                            开启学习提醒
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label>家长绑定码</label>
+                        <div id="parent-code-display" class="code-display"></div>
+                    </div>
+                </div>
+                <button class="close-modal">关闭</button>
+            </div>
+        </div>
+
+        <!-- 通知容器 -->
+        <div id="notification-container"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
